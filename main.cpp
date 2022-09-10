@@ -13,12 +13,13 @@
 #include <algorithm>
 #include <numeric>
 
+using namespace std;
 // utilities ----------------------------------------------------------------------------------------------------------
 // class to log errors, warnings, and other information during the build and inference phases
 class Logger : public nvinfer1::ILogger
 {
 public:
-    void log(Severity severity, const char* msg) override {
+    void log(Severity severity, const char* msg) noexcept override {
         // remove this 'if' if you need more logged info
         if ((severity == Severity::kERROR) || (severity == Severity::kINTERNAL_ERROR)) {
             std::cout << msg << "\n";
@@ -34,7 +35,7 @@ struct TRTDestroy
     {
         if (obj)
         {
-            obj->destroy();
+            delete obj;
         }
     }
 };
@@ -110,7 +111,7 @@ void preprocessImage(const std::string& image_path, float* gpu_input, const nvin
 void postprocessResults(float *gpu_output, const nvinfer1::Dims &dims, int batch_size)
 {
     // get class names
-    auto classes = getClassNames("imagenet_classes.txt");
+    auto classes = getClassNames("../imagenet_classes.txt");
 
     // copy results from GPU to CPU
     std::vector<float> cpu_output(getSizeByDim(dims) * batch_size);
@@ -118,6 +119,7 @@ void postprocessResults(float *gpu_output, const nvinfer1::Dims &dims, int batch
 
     // calculate softmax
     std::transform(cpu_output.begin(), cpu_output.end(), cpu_output.begin(), [](float val) {return std::exp(val);});
+    // float sum = 1.0f;
     auto sum = std::accumulate(cpu_output.begin(), cpu_output.end(), 0.0);
     // find top classes predicted by the model
     std::vector<int> indices(getSizeByDim(dims) * batch_size);
@@ -141,7 +143,9 @@ void parseOnnxModel(const std::string& model_path, TRTUniquePtr<nvinfer1::ICudaE
                     TRTUniquePtr<nvinfer1::IExecutionContext>& context)
 {
     TRTUniquePtr<nvinfer1::IBuilder> builder{nvinfer1::createInferBuilder(gLogger)};
-    TRTUniquePtr<nvinfer1::INetworkDefinition> network{builder->createNetwork()};
+    uint32_t flag = 1U <<static_cast<uint32_t>(nvinfer1::NetworkDefinitionCreationFlag::kEXPLICIT_BATCH);
+
+    TRTUniquePtr<nvinfer1::INetworkDefinition> network{builder->createNetworkV2(flag)};
     TRTUniquePtr<nvonnxparser::IParser> parser{nvonnxparser::createParser(*network, gLogger)};
     TRTUniquePtr<nvinfer1::IBuilderConfig> config{builder->createBuilderConfig()};
     // parse ONNX
@@ -158,10 +162,16 @@ void parseOnnxModel(const std::string& model_path, TRTUniquePtr<nvinfer1::ICudaE
         config->setFlag(nvinfer1::BuilderFlag::kFP16);
     }
     // we have only one image in batch
-    builder->setMaxBatchSize(1);
-    // generate TensorRT engine optimized for the target platform
-    engine.reset(builder->buildEngineWithConfig(*network, *config));
+
+
+    unique_ptr<nvinfer1::IHostMemory,TRTDestroy> serializedModel{builder->buildSerializedNetwork(*network, *config)};
+
+    nvinfer1::IRuntime* runtime = nvinfer1::createInferRuntime(gLogger);
+
+
+    engine.reset(runtime->deserializeCudaEngine( serializedModel->data(), serializedModel->size()) );
     context.reset(engine->createExecutionContext());
+    return;
 }
 
 // main pipeline ------------------------------------------------------------------------------------------------------
@@ -204,12 +214,30 @@ int main(int argc, char* argv[])
         return -1;
     }
 
+    // auto t1=std::chrono::system_clock::now();
+    int64 tick_counter = 0;
+    int frame_idx = 1;
+    
     // preprocess input data
     preprocessImage(image_path, (float *) buffers[0], input_dims[0]);
     // inference
-    context->enqueue(batch_size, buffers.data(), 0, nullptr);
+    int64 t1 = cv::getTickCount();
+    context->executeV2(buffers.data());
+    // context->enqueueV2(buffers.data(), 0, nullptr);
     // postprocess results
     postprocessResults((float *) buffers[1], output_dims[0], batch_size);
+
+    int64 t2 = cv::getTickCount();
+    tick_counter += t2 - t1;
+    // auto t2=std::chrono::system_clock::now();
+
+    // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(t2-t1).count();
+
+    // float fps= 1000/(duration*1e-3);
+
+    // std::cout << "Network FPS = " << std::to_string(fps) << std::endl;
+
+    cout << "FPS: " << ((double)(1)) / (static_cast<double>(tick_counter) / cv::getTickFrequency()) << endl;
 
     for (void* buf : buffers)
     {
