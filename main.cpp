@@ -219,17 +219,48 @@ int main(int argc, char* argv[])
     int frame_idx = 1;
     
     // preprocess input data
-    preprocessImage(image_path, (float *) buffers[0], input_dims[0]);
-    // inference
+    // preprocessImage(image_path, (float *) buffers[0], input_dims[0]);
+    cv::Mat frame = cv::imread(image_path);
+    if (frame.empty())
+    {
+        std::cerr << "Input image " << image_path << " load failed\n";
+        return -1;
+    }
+
+    cv::resize(frame,frame,cv::Size(224,224));
+    int data_idx = 0;
+    int q_size = 224;
+    float blob[1*3*q_size*q_size];
+
+    //     resized.convertTo(flt_image, CV_32FC3, 1.f / 255.f);
+    // cv::cuda::subtract(flt_image, cv::Scalar(0.485f, 0.456f, 0.406f), flt_image, cv::noArray(), -1);
+    // cv::cuda::divide(flt_image, cv::Scalar(0.229f, 0.224f, 0.225f), flt_image, 1, -1);
+    for (int i = 0; i < frame.rows; ++i)
+    {
+        uchar* pixel = frame.ptr<uchar>(i);  // point to first color in row
+        for (int j = 0; j < frame.cols; ++j)
+        {
+            blob[data_idx] = ( (*pixel++)/255.f-0.485f)/0.229f;
+            blob[data_idx+q_size*q_size] = ( (*pixel++)/255.f-0.456f)/0.224f;
+            blob[data_idx+2*q_size*q_size] = ( (*pixel++)/255.f-0.406f)/0.225f;
+            data_idx++;
+        }
+    }
     int64 t1 = cv::getTickCount();
-    context->executeV2(buffers.data());
-    // context->enqueueV2(buffers.data(), 0, nullptr);
+    cudaMemcpyAsync(buffers[0], blob, 1*3*q_size*q_size*sizeof(float), cudaMemcpyHostToDevice);
+
+    // inference
+    
+    // context->executeV2(buffers.data());
+    context->enqueueV2(buffers.data(), 0, nullptr);
+    cudaStreamSynchronize(0);
     // postprocess results
+    int64 t2 = cv::getTickCount();
     postprocessResults((float *) buffers[1], output_dims[0], batch_size);
 
-    int64 t2 = cv::getTickCount();
+    
     tick_counter += t2 - t1;
-    // auto t2=std::chrono::system_clock::now();
+    // auto t2 = std::chrono::system_clock::now();
 
     // auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(t2-t1).count();
 
