@@ -1,0 +1,10 @@
+*.pkl
+.vscode/*
+__pycache__/*
+.ipynb_checkpoints/*
+*.onnx
+trt/build/*
+test_trt/*
+*.ipynb
+*.engine
+*.pth
